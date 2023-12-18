@@ -7,6 +7,25 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { GUI } from "three/examples/jsm/libs/dat.gui.module.js";
+import * as CANNON from "cannon-es";
+
+// GUI
+const gui = new GUI();
+
+// SETUP PHYSICS WORLD
+const world = new CANNON.World({
+  gravity: new CANNON.Vec3(0, -9.81, 0),
+});
+
+let blocksBodies = [];
+const timeStep = 1 / 60;
+const planeBody = new CANNON.Body({
+  shape: new CANNON.Plane(),
+  type: CANNON.BODY_TYPES.STATIC,
+});
+planeBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+planeBody.position.y = -0.1;
+world.addBody(planeBody);
 
 /////////////////////////////////////////////////////////////////////////
 //// DRACO LOADER TO LOAD DRACO COMPRESSED MODELS FROM BLENDER
@@ -26,6 +45,29 @@ document.body.appendChild(container);
 ///// SCENE CREATION
 const scene = new THREE.Scene();
 scene.background = new THREE.Color("#c8f0f9");
+const planeGeometry = new THREE.PlaneBufferGeometry(1, 1);
+const planeMaterial = new THREE.MeshStandardMaterial({
+  color: 0x2f1b26,
+  side: THREE.DoubleSide,
+});
+const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+scene.add(planeMesh);
+
+planeMesh.rotation.x = 1.56;
+planeMesh.position.y = -1;
+planeMesh.scale.set(5, 5, 5);
+
+var params = {
+  modelcolor: "#ff0000",
+};
+
+var folder = gui.addFolder("Model Colour");
+folder
+  .addColor(params, "modelcolor")
+  .name("Model Color")
+  .onChange(function () {
+    planeMesh.material.color.set(params.modelcolor);
+  });
 
 /////////////////////////////////////////////////////////////////////////
 ///// RENDERER CONFIG
@@ -67,14 +109,15 @@ scene.add(ambient);
 
 const sunLight = new THREE.DirectionalLight(0xe8c37b, 1.96);
 sunLight.position.set(-69, 44, 14);
+sunLight.intensity = 1;
 scene.add(sunLight);
 
 // RAYCAST SETUP
 const mouse = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
-const clcikedMAterial = new THREE.MeshPhysicalMaterial();
+let hoverMaterial = new THREE.MeshPhysicalMaterial();
 let jengaBlockMaterial = null;
-clcikedMAterial.color.set(Math.random() * 0xffffff);
+let blocksObjects = [];
 /////////////////////////////////////////////////////////////////////////
 ///// LOADING GLB/GLTF MODEL FROM BLENDER
 loader.load("models/gltf/Jenga/scene.gltf", function (gltf) {
@@ -83,24 +126,40 @@ loader.load("models/gltf/Jenga/scene.gltf", function (gltf) {
   camera.lookAt(jengaObject.position);
   jengaBlockMaterial = findObjectWithMaterial(jengaObject);
 
-  // GUI CONTORLS FOR the jenga
-  gui.add(jengaObject.scale, "x").min(1).max(30).step(0.1);
-  gui.add(jengaObject.scale, "y").min(1).max(30).step(0.1);
-  gui.add(jengaObject.scale, "z").min(1).max(30).step(0.1);
-
-  gui.add(jengaObject.position, "x").min(-10).max(100).step(0.01);
-  gui.add(jengaObject.position, "y").min(-10).max(100).step(0.01);
-  gui.add(jengaObject.position, "z").min(-10).max(100).step(0.01);
-
-  gui.add(jengaObject.rotation, "x").min(-10).max(100).step(0.01);
-  gui.add(jengaObject.rotation, "y").min(-10).max(100).step(0.01);
-  gui.add(jengaObject.rotation, "z").min(-10).max(100).step(0.01);
-
-  // SETTINGS
-
   jengaObject.rotation.y = 0.24;
   jengaObject.scale.set(3, 3, 3);
   jengaObject.position.set(0, -0.15, 0);
+
+  jengaObject.traverse(function (child) {
+    if (child.isMesh && child.name.includes("blocks")) {
+      blocksObjects.push(child);
+      const bbox = new THREE.Box3().setFromObject(child);
+      const values = new THREE.Vector3(
+        bbox.max.x - bbox.min.x, //width
+        bbox.max.y - bbox.min.y, //height
+        bbox.max.z - bbox.min.z //depth
+      );
+      const blockShape = new CANNON.Box(
+        new CANNON.Vec3(values.x, values.y, values.z)
+      );
+      const blockBody = new CANNON.Body({
+        shape: blockShape,
+        mass: 1,
+        position: new CANNON.Vec3(
+          child.position.x,
+          child.position.y,
+          child.position.z
+        ),
+        quaternion: new CANNON.Quaternion(
+          child.quaternion.x,
+          child.quaternion.y,
+          child.quaternion.z
+        ),
+      });
+      blocksBodies.push(blockBody);
+      world.addBody(blockBody);
+    }
+  });
 });
 
 function findObjectWithMaterial(object) {
@@ -123,9 +182,31 @@ function onClick() {
   if (intersects.length > 0) {
     intersects[0].object.material =
       intersects[0].object.material === jengaBlockMaterial
-        ? clcikedMAterial
+        ? hoverMaterial
         : jengaBlockMaterial;
   }
+}
+
+function onMouseMove(event) {
+  event.preventDefault();
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersecs = raycaster.intersectObjects(blocksObjects, false);
+  let intersectedObj = null;
+
+  if (intersecs.length > 0) {
+    intersectedObj = intersecs[0].object;
+  }
+
+  blocksObjects.forEach((object, i) => {
+    if (intersectedObj && intersectedObj.name === object.name) {
+      blocksObjects[i].material = hoverMaterial;
+    } else {
+      blocksObjects[i].material = jengaBlockMaterial;
+    }
+  });
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -169,7 +250,6 @@ function setOrbitControlsLimits() {
 }
 
 //GUI
-const gui = new GUI();
 gui.add(camera.position, "x").min(-100).max(100).step(0.01);
 gui.add(camera.position, "y").min(-100).max(100).step(0.01);
 gui.add(camera.position, "z").min(-100).max(100).step(0.01);
@@ -182,8 +262,18 @@ function rendeLoop() {
 
   controls.update(); // update orbit controls
 
+  world.step(timeStep);
+  planeMesh.position.copy(planeBody.position);
+  planeMesh.quaternion.copy(planeBody.quaternion);
+
+  blocksBodies.forEach((blockBody, i) => {
+    blocksObjects[i].position.copy(blockBody.position);
+    blocksObjects[i].quaternion.copy(blockBody.quaternion);
+  });
+
   renderer.render(scene, camera); // render the scene using the camera
-  renderer.domElement.addEventListener("click", onClick, false);
+  // renderer.domElement.addEventListener("click", onClick, false);
+  document.addEventListener("mousemove", onMouseMove, false);
 
   requestAnimationFrame(rendeLoop); //loop the render function
 }
